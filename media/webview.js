@@ -48,6 +48,26 @@
     }
   });
 
+  // Ctrl/Cmd+A anywhere in the panel selects only the visible log lines, instead of the
+  // browser default of selecting the whole page (toolbar labels, buttons, status text).
+  // The filter and line-limit text fields keep their native select-all-within-field behavior.
+  document.addEventListener('keydown', (e) => {
+    const isSelectAllCombo = (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'a';
+    if (!isSelectAllCombo) {
+      return;
+    }
+    const active = document.activeElement;
+    if (active === filterInput || active === lineLimitInput) {
+      return;
+    }
+    e.preventDefault();
+    const range = document.createRange();
+    range.selectNodeContents(content);
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  });
+
   // Restoring a persisted view (e.g. after a window reload/restart): re-apply the
   // last filter/toggle values before the first render. The file to tail and its line
   // limit are read from this same state by the extension host's webview serializer.
