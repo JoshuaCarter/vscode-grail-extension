@@ -4,7 +4,7 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_LINE_LIMIT = 2000;
+const DEFAULT_LINE_LIMIT = 10000;
 const MIN_LINE_LIMIT = 1;
 const MAX_LINE_LIMIT = 200000;
 const CHUNK_SIZE = 64 * 1024;
