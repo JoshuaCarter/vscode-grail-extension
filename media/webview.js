@@ -16,7 +16,37 @@
   let rawLines = [];
   let following = true;
   let currentFilePath = null;
+  let pendingLines = null;
   const SCROLL_EPS = 24;
+
+  // content.innerHTML gets fully replaced on every render, which destroys any active
+  // browser text selection. While the user has text selected inside the log, incoming
+  // updates are held back instead of being rendered immediately, so copying text stays
+  // stable even while new lines keep arriving in the background.
+  function hasActiveSelectionInContent() {
+    const sel = window.getSelection();
+    return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && content.contains(sel.anchorNode);
+  }
+
+  function applyIncomingLines(lines) {
+    if (hasActiveSelectionInContent()) {
+      pendingLines = lines;
+      statusText.textContent = 'Selection active \u2014 new lines paused (click elsewhere to resume)';
+      return;
+    }
+    pendingLines = null;
+    rawLines = lines;
+    render();
+  }
+
+  document.addEventListener('selectionchange', () => {
+    if (pendingLines && !hasActiveSelectionInContent()) {
+      const lines = pendingLines;
+      pendingLines = null;
+      rawLines = lines;
+      render();
+    }
+  });
 
   // Restoring a persisted view (e.g. after a window reload/restart): re-apply the
   // last filter/toggle values before the first render. The file to tail and its line
@@ -205,8 +235,7 @@
         persistState();
         break;
       case 'update':
-        rawLines = msg.lines;
-        render();
+        applyIncomingLines(msg.lines);
         break;
       case 'error':
         statusText.textContent = 'Error: ' + msg.message;
