@@ -10,7 +10,7 @@
   "categories": ["Other"],
   "activationEvents": [
     "onCommand:tailGrepViewer.open",
-    "onWebviewPanel:tailGrepViewer"
+    "onCustomEditor:tailGrepViewer.view"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -20,6 +20,18 @@
         "title": "Tail + Grep: Open File",
         "category": "Tail Viewer",
         "icon": "$(eye)"
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "tailGrepViewer.view",
+        "displayName": "Tail + Grep Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*"
+          }
+        ],
+        "priority": "option"
       }
     ],
     "menus": {

@@ -13,7 +13,7 @@ const POLL_INTERVAL_MS = 300;
 /** @type {Map<string, TailSession>} */
 const sessionsByPath = new Map();
 
-const VIEW_TYPE = 'tailGrepViewer';
+const VIEW_TYPE = 'tailGrepViewer.view';
 
 function activate(context) {
   context.subscriptions.push(
@@ -22,38 +22,20 @@ function activate(context) {
       if (!uri) {
         return;
       }
-      openOrRevealSession(context, uri.fsPath);
+      // vscode.openWith opens the real file resource with an alternate viewer
+      // (the same mechanism any other custom editor uses), instead of a detached
+      // webview panel that has no resource of its own. That's what makes the
+      // resulting tab draggable elsewhere (e.g. into chat) exactly like the
+      // underlying file would be, and it reveals the existing tab instead of
+      // duplicating it if that file is already open in this viewer.
+      await vscode.commands.executeCommand('vscode.openWith', uri, VIEW_TYPE);
     })
   );
 
-  // Lets a panel that was open when the window/editor was closed come back
-  // automatically on the next launch, restored with the same file, line
-  // limit, and filter (persisted via the webview's own setState/getState).
   context.subscriptions.push(
-    vscode.window.registerWebviewPanelSerializer(VIEW_TYPE, {
-      async deserializeWebviewPanel(webviewPanel, state) {
-        const filePath = state && state.filePath;
-        if (!filePath || !fs.existsSync(filePath)) {
-          webviewPanel.webview.options = { enableScripts: false };
-          webviewPanel.webview.html = `<!DOCTYPE html><html><body style="font-family:var(--vscode-font-family);padding:16px;color:var(--vscode-descriptionForeground);">File no longer available${
-            filePath ? `: <code>${escapeHtml(filePath)}</code>` : ''
-          }.</body></html>`;
-          return;
-        }
-        if (sessionsByPath.has(filePath)) {
-          webviewPanel.dispose();
-          return;
-        }
-        const session = new TailSession(context, filePath, {
-          panel: webviewPanel,
-          lineLimit: state.lineLimit
-        });
-        sessionsByPath.set(filePath, session);
-        session.panel.onDidDispose(() => {
-          session.dispose();
-          sessionsByPath.delete(filePath);
-        });
-      }
+    vscode.window.registerCustomEditorProvider(VIEW_TYPE, new TailEditorProvider(context), {
+      webviewOptions: { retainContextWhenHidden: true },
+      supportsMultipleEditorsPerDocument: false
     })
   );
 }
@@ -80,44 +62,46 @@ async function resolveTargetUri(uriArg) {
   return picked && picked[0];
 }
 
-function openOrRevealSession(context, filePath) {
-  const existing = sessionsByPath.get(filePath);
-  if (existing) {
-    existing.panel.reveal(vscode.ViewColumn.Active);
-    return;
+class TailEditorProvider {
+  constructor(context) {
+    this.context = context;
+    // Required by the CustomEditorProvider interface even for a read-only viewer
+    // that never edits its document; this emitter simply never fires.
+    this._onDidChangeCustomDocument = new vscode.EventEmitter();
+    this.onDidChangeCustomDocument = this._onDidChangeCustomDocument.event;
   }
-  const session = new TailSession(context, filePath);
-  sessionsByPath.set(filePath, session);
-  session.panel.onDidDispose(() => {
-    session.dispose();
-    sessionsByPath.delete(filePath);
-  });
+
+  async openCustomDocument(uri) {
+    return { uri, dispose() {} };
+  }
+
+  async resolveCustomEditor(document, webviewPanel) {
+    const filePath = document.uri.fsPath;
+    const session = new TailSession(this.context, filePath, { panel: webviewPanel });
+    sessionsByPath.set(filePath, session);
+    webviewPanel.onDidDispose(() => {
+      session.dispose();
+      sessionsByPath.delete(filePath);
+    });
+  }
 }
 
 class TailSession {
-  constructor(context, filePath, options = {}) {
+  constructor(context, filePath, options) {
     this.context = context;
     this.filePath = filePath;
-    this.lineLimit = normalizeLineLimit(options.lineLimit);
+    this.lineLimit = DEFAULT_LINE_LIMIT;
     this.lines = [];
     this.offset = 0;
     this.partial = '';
     this.pollTimer = null;
     this.disposed = false;
 
-    const webviewOptions = {
+    this.panel = options.panel;
+    this.panel.webview.options = {
       enableScripts: true,
-      retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')]
     };
-
-    this.panel =
-      options.panel ||
-      vscode.window.createWebviewPanel(VIEW_TYPE, `Tail: ${path.basename(filePath)}`, vscode.ViewColumn.Active, webviewOptions);
-
-    // Restored panels come back with no options set, so they need to be applied explicitly.
-    this.panel.webview.options = webviewOptions;
-    this.panel.title = `Tail: ${path.basename(filePath)}`;
 
     this.panel.webview.html = this.getHtml();
     this.panel.webview.onDidReceiveMessage((msg) => this.handleMessage(msg));

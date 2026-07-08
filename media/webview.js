@@ -262,6 +262,19 @@
         following = true;
         render();
         persistState();
+        // The extension host always starts a fresh session at the default line
+        // limit (custom editors don't hand back previously persisted state the
+        // way a plain webview serializer would). If we remember a different
+        // limit from before a reload, ask it to re-read the tail with that
+        // limit instead.
+        if (
+          typeof previousState.lineLimit === 'number' &&
+          previousState.lineLimit > 0 &&
+          previousState.lineLimit !== msg.lineLimit
+        ) {
+          lineLimitInput.value = previousState.lineLimit;
+          vscode.postMessage({ type: 'setLineLimit', value: previousState.lineLimit });
+        }
         break;
       case 'update':
         applyIncomingLines(msg.lines);

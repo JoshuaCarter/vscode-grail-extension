@@ -10,6 +10,10 @@ with ease, wipe the file with a single click.
 3. Adjust **Lines** to change how many lines are kept.
 4. Click **Wipe File Contents** to instantly truncate the file.
 
+The viewer tab is bound to the real file on disk, so you can drag its tab into chat (or
+anywhere else you'd drop a file) and it behaves exactly like dropping the file itself. The
+filter, regex/case toggles, and line limit are remembered per file across reloads.
+
 ## Installation
 
 Copy this folder into your extensions directory, then reload the window:
