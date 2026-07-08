@@ -1,6 +1,6 @@
 {
   "name": "grail",
-  "displayName": "Grail (tail & grep)",
+  "displayName": "Grail",
   "description": "Grail — read-only tail -f viewer with live follow, inline grep-style filtering, and safe log wipe.",
   "version": "1.0.0",
   "publisher": "joshuacarter",
@@ -35,7 +35,7 @@
     "customEditors": [
       {
         "viewType": "tailGrepViewer.view",
-        "displayName": "Grail (tail & grep)",
+        "displayName": "Grail",
         "selector": [
           {
             "filenamePattern": "*"
