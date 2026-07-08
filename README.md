@@ -8,9 +8,9 @@ with ease, wipe the file with a single click.
 1. Right-click a file (Explorer, editor tab, or inside an open file) → **Tail + Grep: Open File**.
 2. Type in the filter bar to narrow down lines — plain text or `/regex/flags`.
 3. Adjust **Lines** to change how many lines are kept.
-4. Click **Wipe File Contents** to instantly clear the log. The file path is replaced
-   with a fresh empty file while any process still writing keeps its handle on the old
-   inode (unlink on Linux/macOS, delete-on-close on Windows). Never truncates in place.
+4. Click **Wipe File Contents** to clear the log. Tries ReplaceFile / delete-on-close /
+   rename on Windows (unlink on Unix). If the log writer holds an exclusive lock,
+   the viewer clears from the current end instead — new lines still stream in.
 5. Click the (subtle, grey) line number next to any log line to open the real file at that
    exact line in a normal editor, next to the viewer.
 

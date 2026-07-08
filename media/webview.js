@@ -31,8 +31,8 @@
     return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && content.contains(sel.anchorNode);
   }
 
-  function applyIncomingLines(lines, newStartLine) {
-    if (hasActiveSelectionInContent()) {
+  function applyIncomingLines(lines, newStartLine, force) {
+    if (!force && hasActiveSelectionInContent()) {
       pendingLines = lines;
       pendingStartLine = newStartLine;
       statusText.textContent = 'Selection active \u2014 new lines paused (click elsewhere to resume)';
@@ -40,6 +40,9 @@
     }
     pendingLines = null;
     pendingStartLine = null;
+    if (force) {
+      window.getSelection()?.removeAllRanges();
+    }
     rawLines = lines;
     if (typeof newStartLine === 'number') {
       startLine = newStartLine;
@@ -318,7 +321,7 @@
         }
         break;
       case 'update':
-        applyIncomingLines(msg.lines, msg.startLine);
+        applyIncomingLines(msg.lines, msg.startLine, msg.force);
         break;
       case 'error':
         statusText.textContent = 'Error: ' + msg.message;

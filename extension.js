@@ -101,6 +101,9 @@ class TailSession {
     // so the gutter can show/jump to real file line numbers even though only
     // a tail window of the file is held in memory.
     this.startLineNumber = 1;
+    // When physical wipe fails (exclusive lock), only show bytes written after this offset.
+    this.softWipeMinOffset = 0;
+    this.pollEpoch = 0;
 
     this.panel = options.panel;
     this.panel.webview.options = {
@@ -154,7 +157,7 @@ class TailSession {
 
   async loadInitial() {
     try {
-      const { lines, size, startLine } = readTailLines(this.filePath, this.lineLimit);
+      const { lines, size, startLine } = readTailLines(this.filePath, this.lineLimit, this.softWipeMinOffset);
       this.lines = lines;
       this.offset = size;
       this.partial = '';
@@ -201,6 +204,7 @@ class TailSession {
     if (this.disposed) {
       return;
     }
+    const epoch = this.pollEpoch;
     let stat;
     try {
       stat = fs.statSync(this.filePath);
@@ -213,6 +217,7 @@ class TailSession {
       this.lines = [];
       this.partial = '';
       this.startLineNumber = 1;
+      this.softWipeMinOffset = 0;
       if (stat.size === 0) {
         this.post({ type: 'update', lines: [], startLine: this.startLineNumber });
         return;
@@ -236,11 +241,17 @@ class TailSession {
       const parts = text.split(/\r\n|\r|\n/);
       this.partial = parts.pop() || '';
       if (parts.length > 0) {
+        if (epoch !== this.pollEpoch) {
+          return;
+        }
         this.lines.push(...parts);
         if (this.lines.length > this.lineLimit) {
           const overflow = this.lines.length - this.lineLimit;
           this.lines = this.lines.slice(overflow);
           this.startLineNumber += overflow;
+        }
+        if (epoch !== this.pollEpoch) {
+          return;
         }
         this.post({ type: 'update', lines: this.lines, startLine: this.startLineNumber });
       }
@@ -269,17 +280,34 @@ class TailSession {
   async clearFile() {
     try {
       wipeLogFileSafely(this.filePath);
+      this.softWipeMinOffset = 0;
       this.offset = 0;
       this.lines = [];
       this.partial = '';
       this.startLineNumber = 1;
-      this.post({ type: 'update', lines: [], startLine: this.startLineNumber });
+      this.pollEpoch++;
+      this.post({ type: 'update', lines: [], startLine: this.startLineNumber, force: true });
       this.post({
         type: 'info',
         message: 'File wiped (rotated safely; any process still writing keeps the old file).'
       });
     } catch (err) {
-      this.post({ type: 'error', message: `Failed to clear file: ${err.message}` });
+      if (trySoftWipe(this)) {
+        this.pollEpoch++;
+        this.post({ type: 'update', lines: [], startLine: this.startLineNumber, force: true });
+        this.post({
+          type: 'info',
+          message:
+            'File is locked by another process — viewer cleared from here. New lines will still appear.'
+        });
+        return;
+      }
+      this.post({
+        type: 'error',
+        message: isLockedWipeError(err)
+          ? 'File is locked by another process and cannot be wiped.'
+          : 'Could not wipe file.'
+      });
     }
   }
 
@@ -298,21 +326,21 @@ class TailSession {
   }
 }
 
-function readTailLines(filePath, numLines) {
+function readTailLines(filePath, numLines, minByteOffset = 0) {
   const fd = fs.openSync(filePath, 'r');
   try {
     const stat = fs.fstatSync(fd);
     const fileSize = stat.size;
-    if (fileSize === 0) {
-      return { lines: [], size: 0, startLine: 1 };
+    if (fileSize === 0 || fileSize <= minByteOffset) {
+      return { lines: [], size: fileSize, startLine: computeNextLineNumber(filePath, fileSize) };
     }
 
     let position = fileSize;
     let newlineCount = 0;
     const chunks = [];
 
-    while (position > 0 && newlineCount <= numLines) {
-      const readSize = Math.min(CHUNK_SIZE, position);
+    while (position > minByteOffset && newlineCount <= numLines) {
+      const readSize = Math.min(CHUNK_SIZE, position - minByteOffset);
       position -= readSize;
       const buffer = Buffer.alloc(readSize);
       fs.readSync(fd, buffer, 0, readSize, position);
@@ -324,13 +352,8 @@ function readTailLines(filePath, numLines) {
       }
     }
 
-    // If the backward scan reached byte 0, the buffer we just read *is* the
-    // whole file, so its parsed line count doubles as the file's true total
-    // line count without any extra work. Otherwise there's more file above
-    // what we scanned, so a separate lightweight full-file pass is needed to
-    // know how many lines precede our window (only costs one linear byte scan,
-    // no line storage).
     const reachedStartOfFile = position === 0;
+    const reachedSoftWipe = position === minByteOffset && minByteOffset > 0;
 
     const text = Buffer.concat(chunks).toString('utf8');
     let lines = text.split(/\r\n|\r|\n/);
@@ -342,8 +365,15 @@ function readTailLines(filePath, numLines) {
       lines = lines.slice(lines.length - numLines);
     }
 
-    const totalLines = reachedStartOfFile ? scannedLineCount : countFileLines(filePath, fd);
-    const startLine = Math.max(1, totalLines - lines.length + 1);
+    let startLine;
+    if (reachedSoftWipe) {
+      startLine = computeNextLineNumber(filePath, minByteOffset);
+    } else if (reachedStartOfFile) {
+      startLine = Math.max(1, scannedLineCount - lines.length + 1);
+    } else {
+      const totalLines = countFileLines(filePath, fd);
+      startLine = Math.max(1, totalLines - lines.length + 1);
+    }
 
     return { lines, size: fileSize, startLine };
   } finally {
@@ -357,37 +387,55 @@ function countFileLines(filePath, existingFd) {
   const fd = existingFd !== undefined ? existingFd : fs.openSync(filePath, 'r');
   try {
     const stat = fs.fstatSync(fd);
-    const size = stat.size;
-    if (size === 0) {
-      return 0;
-    }
-    const buffer = Buffer.alloc(CHUNK_SIZE);
-    let position = 0;
-    let count = 0;
-    let sawAnyByte = false;
-    let lastByteWasNewline = false;
-    while (position < size) {
-      const readSize = Math.min(CHUNK_SIZE, size - position);
-      fs.readSync(fd, buffer, 0, readSize, position);
-      for (let i = 0; i < readSize; i++) {
-        sawAnyByte = true;
-        if (buffer[i] === 10 /* \n */) {
-          count++;
-          lastByteWasNewline = true;
-        } else {
-          lastByteWasNewline = false;
-        }
-      }
-      position += readSize;
-    }
-    if (sawAnyByte && !lastByteWasNewline) {
-      count++;
-    }
-    return count;
+    return countLinesUpToOffset(fd, stat.size);
   } finally {
     if (existingFd === undefined) {
       fs.closeSync(fd);
     }
+  }
+}
+
+function countLinesUpToOffset(fd, byteOffset) {
+  if (byteOffset === 0) {
+    return 0;
+  }
+  const buffer = Buffer.alloc(CHUNK_SIZE);
+  let position = 0;
+  let count = 0;
+  let sawAnyByte = false;
+  let lastByteWasNewline = false;
+  while (position < byteOffset) {
+    const readSize = Math.min(CHUNK_SIZE, byteOffset - position);
+    fs.readSync(fd, buffer, 0, readSize, position);
+    for (let i = 0; i < readSize; i++) {
+      sawAnyByte = true;
+      if (buffer[i] === 10 /* \n */) {
+        count++;
+        lastByteWasNewline = true;
+      } else {
+        lastByteWasNewline = false;
+      }
+    }
+    position += readSize;
+  }
+  if (sawAnyByte && !lastByteWasNewline) {
+    count++;
+  }
+  return count;
+}
+
+function computeNextLineNumber(filePath, byteOffset) {
+  if (byteOffset === 0) {
+    return 1;
+  }
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const lineCount = countLinesUpToOffset(fd, byteOffset);
+    const buf = Buffer.alloc(1);
+    fs.readSync(fd, buf, 0, 1, byteOffset - 1);
+    return buf[0] === 10 /* \n */ ? lineCount + 1 : lineCount;
+  } finally {
+    fs.closeSync(fd);
   }
 }
 
@@ -402,7 +450,7 @@ function normalizeLineLimit(value) {
 // Cross-platform strategy: remove the directory entry while the writer keeps its open
 // handle on the orphaned inode, then create a brand-new empty file at the original path.
 //   - Unix/macOS: unlink (works even when another process has the file open)
-//   - Windows: delete-on-close via Win32 (rename often fails with EBUSY on locked logs)
+//   - Windows: ReplaceFile, then delete-on-close, then rename (locked logs)
 function wipeLogFileSafely(filePath) {
   if (!fs.existsSync(filePath)) {
     fs.writeFileSync(filePath, '');
@@ -449,8 +497,43 @@ function wipeLogFileWindows(filePath) {
       { timeout: 15000, windowsHide: true }
     );
   } catch (err) {
-    const detail = err.stderr ? String(err.stderr).trim() : err.message;
-    throw new Error(detail || err.message);
+    if (isLockedWipeError(err)) {
+      const locked = new Error('FILE_LOCKED');
+      locked.code = 'FILE_LOCKED';
+      throw locked;
+    }
+    throw new Error('Could not wipe log file.');
+  }
+}
+
+function isLockedWipeError(err) {
+  const parts = [err && err.message, err && err.stderr, err && err.stdout];
+  if (err && err.output) {
+    parts.push(...err.output);
+  }
+  const text = parts.filter(Boolean).join('\n');
+  return (
+    (err && err.code === 'FILE_LOCKED') ||
+    /Could not wipe log|Win32 32|sharing violation|being used by another process|\bEBUSY\b/i.test(text)
+  );
+}
+
+// When the file cannot be replaced on disk, clear the viewer from the current EOF instead.
+function trySoftWipe(session) {
+  try {
+    const stat = fs.statSync(session.filePath);
+    session.softWipeMinOffset = stat.size;
+    session.offset = stat.size;
+    session.lines = [];
+    session.partial = '';
+    try {
+      session.startLineNumber = computeNextLineNumber(session.filePath, stat.size);
+    } catch (_) {
+      session.startLineNumber = 1;
+    }
+    return true;
+  } catch (_) {
+    return false;
   }
 }
 
