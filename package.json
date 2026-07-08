@@ -2,7 +2,7 @@
   "name": "grail",
   "displayName": "Grail",
   "description": "Grail — read-only tail -f viewer with live follow, inline grep-style filtering, and safe log wipe.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "joshuacarter",
   "license": "MIT",
   "repository": {
