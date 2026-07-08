@@ -9,6 +9,8 @@ with ease, wipe the file with a single click.
 2. Type in the filter bar to narrow down lines — plain text or `/regex/flags`.
 3. Adjust **Lines** to change how many lines are kept.
 4. Click **Wipe File Contents** to instantly truncate the file.
+5. Click the (subtle, grey) line number next to any log line to open the real file at that
+   exact line in a normal editor, next to the viewer.
 
 The viewer tab is bound to the real file on disk, so you can drag its tab into chat (or
 anywhere else you'd drop a file) and it behaves exactly like dropping the file itself. The

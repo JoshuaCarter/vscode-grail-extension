@@ -96,6 +96,10 @@ class TailSession {
     this.partial = '';
     this.pollTimer = null;
     this.disposed = false;
+    // Absolute (1-based) line number of this.lines[0] within the file on disk,
+    // so the gutter can show/jump to real file line numbers even though only
+    // a tail window of the file is held in memory.
+    this.startLineNumber = 1;
 
     this.panel = options.panel;
     this.panel.webview.options = {
@@ -139,6 +143,9 @@ class TailSession {
       case 'refresh':
         await this.loadInitial();
         break;
+      case 'gotoLine':
+        await this.goToLine(msg.line);
+        break;
       default:
         break;
     }
@@ -146,13 +153,39 @@ class TailSession {
 
   async loadInitial() {
     try {
-      const { lines, size } = readTailLines(this.filePath, this.lineLimit);
+      const { lines, size, startLine } = readTailLines(this.filePath, this.lineLimit);
       this.lines = lines;
       this.offset = size;
       this.partial = '';
-      this.post({ type: 'init', filePath: this.filePath, lineLimit: this.lineLimit, lines: this.lines });
+      this.startLineNumber = startLine;
+      this.post({
+        type: 'init',
+        filePath: this.filePath,
+        lineLimit: this.lineLimit,
+        lines: this.lines,
+        startLine: this.startLineNumber
+      });
     } catch (err) {
       this.post({ type: 'error', message: `Failed to read file: ${err.message}` });
+    }
+  }
+
+  // Opens the underlying file in a normal (non-tail) text editor beside this
+  // viewer and jumps straight to the requested line, so clicking a line number
+  // in the gutter behaves like a "go to definition" for that spot in the file.
+  async goToLine(lineNumber) {
+    try {
+      const doc = await vscode.workspace.openTextDocument(this.filePath);
+      const editor = await vscode.window.showTextDocument(doc, {
+        viewColumn: vscode.ViewColumn.Beside,
+        preserveFocus: false
+      });
+      const zeroBased = Math.min(Math.max(0, lineNumber - 1), Math.max(0, doc.lineCount - 1));
+      const range = doc.lineAt(zeroBased).range;
+      editor.selection = new vscode.Selection(range.start, range.start);
+      editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+    } catch (err) {
+      this.post({ type: 'error', message: `Failed to open line ${lineNumber}: ${err.message}` });
     }
   }
 
@@ -178,8 +211,9 @@ class TailSession {
       this.offset = 0;
       this.lines = [];
       this.partial = '';
+      this.startLineNumber = 1;
       if (stat.size === 0) {
-        this.post({ type: 'update', lines: [] });
+        this.post({ type: 'update', lines: [], startLine: this.startLineNumber });
         return;
       }
       await this.loadInitial();
@@ -203,9 +237,11 @@ class TailSession {
       if (parts.length > 0) {
         this.lines.push(...parts);
         if (this.lines.length > this.lineLimit) {
-          this.lines = this.lines.slice(this.lines.length - this.lineLimit);
+          const overflow = this.lines.length - this.lineLimit;
+          this.lines = this.lines.slice(overflow);
+          this.startLineNumber += overflow;
         }
-        this.post({ type: 'update', lines: this.lines });
+        this.post({ type: 'update', lines: this.lines, startLine: this.startLineNumber });
       }
     } catch (err) {
       // Transient read errors (e.g. writer briefly locking the file) are ignored; next poll retries.
@@ -220,8 +256,10 @@ class TailSession {
     const n = normalizeLineLimit(value);
     this.lineLimit = n;
     if (this.lines.length > n) {
-      this.lines = this.lines.slice(this.lines.length - n);
-      this.post({ type: 'update', lines: this.lines });
+      const overflow = this.lines.length - n;
+      this.lines = this.lines.slice(overflow);
+      this.startLineNumber += overflow;
+      this.post({ type: 'update', lines: this.lines, startLine: this.startLineNumber });
     } else {
       await this.loadInitial();
     }
@@ -243,7 +281,8 @@ class TailSession {
       this.offset = 0;
       this.lines = [];
       this.partial = '';
-      this.post({ type: 'update', lines: [] });
+      this.startLineNumber = 1;
+      this.post({ type: 'update', lines: [], startLine: this.startLineNumber });
       this.post({ type: 'info', message: 'File contents wiped (truncated to 0 bytes).' });
     } catch (err) {
       this.post({ type: 'error', message: `Failed to clear file: ${err.message}` });
@@ -271,7 +310,7 @@ function readTailLines(filePath, numLines) {
     const stat = fs.fstatSync(fd);
     const fileSize = stat.size;
     if (fileSize === 0) {
-      return { lines: [], size: 0 };
+      return { lines: [], size: 0, startLine: 1 };
     }
 
     let position = fileSize;
@@ -291,17 +330,70 @@ function readTailLines(filePath, numLines) {
       }
     }
 
+    // If the backward scan reached byte 0, the buffer we just read *is* the
+    // whole file, so its parsed line count doubles as the file's true total
+    // line count without any extra work. Otherwise there's more file above
+    // what we scanned, so a separate lightweight full-file pass is needed to
+    // know how many lines precede our window (only costs one linear byte scan,
+    // no line storage).
+    const reachedStartOfFile = position === 0;
+
     const text = Buffer.concat(chunks).toString('utf8');
     let lines = text.split(/\r\n|\r|\n/);
     if (lines.length && lines[lines.length - 1] === '') {
       lines.pop();
     }
+    const scannedLineCount = lines.length;
     if (lines.length > numLines) {
       lines = lines.slice(lines.length - numLines);
     }
-    return { lines, size: fileSize };
+
+    const totalLines = reachedStartOfFile ? scannedLineCount : countFileLines(filePath, fd);
+    const startLine = Math.max(1, totalLines - lines.length + 1);
+
+    return { lines, size: fileSize, startLine };
   } finally {
     fs.closeSync(fd);
+  }
+}
+
+// Counts total lines in a file with O(1) memory by streaming through it and
+// only tallying newline bytes, never holding the full contents at once.
+function countFileLines(filePath, existingFd) {
+  const fd = existingFd !== undefined ? existingFd : fs.openSync(filePath, 'r');
+  try {
+    const stat = fs.fstatSync(fd);
+    const size = stat.size;
+    if (size === 0) {
+      return 0;
+    }
+    const buffer = Buffer.alloc(CHUNK_SIZE);
+    let position = 0;
+    let count = 0;
+    let sawAnyByte = false;
+    let lastByteWasNewline = false;
+    while (position < size) {
+      const readSize = Math.min(CHUNK_SIZE, size - position);
+      fs.readSync(fd, buffer, 0, readSize, position);
+      for (let i = 0; i < readSize; i++) {
+        sawAnyByte = true;
+        if (buffer[i] === 10 /* \n */) {
+          count++;
+          lastByteWasNewline = true;
+        } else {
+          lastByteWasNewline = false;
+        }
+      }
+      position += readSize;
+    }
+    if (sawAnyByte && !lastByteWasNewline) {
+      count++;
+    }
+    return count;
+  } finally {
+    if (existingFd === undefined) {
+      fs.closeSync(fd);
+    }
   }
 }
 

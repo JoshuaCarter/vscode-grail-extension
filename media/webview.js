@@ -17,6 +17,9 @@
   let following = true;
   let currentFilePath = null;
   let pendingLines = null;
+  let pendingStartLine = null;
+  // Absolute (1-based) line number of rawLines[0] in the file on disk.
+  let startLine = 1;
   const SCROLL_EPS = 24;
 
   // content.innerHTML gets fully replaced on every render, which destroys any active
@@ -28,22 +31,32 @@
     return !!sel && !sel.isCollapsed && sel.rangeCount > 0 && content.contains(sel.anchorNode);
   }
 
-  function applyIncomingLines(lines) {
+  function applyIncomingLines(lines, newStartLine) {
     if (hasActiveSelectionInContent()) {
       pendingLines = lines;
+      pendingStartLine = newStartLine;
       statusText.textContent = 'Selection active \u2014 new lines paused (click elsewhere to resume)';
       return;
     }
     pendingLines = null;
+    pendingStartLine = null;
     rawLines = lines;
+    if (typeof newStartLine === 'number') {
+      startLine = newStartLine;
+    }
     render();
   }
 
   document.addEventListener('selectionchange', () => {
     if (pendingLines && !hasActiveSelectionInContent()) {
       const lines = pendingLines;
+      const newStartLine = pendingStartLine;
       pendingLines = null;
+      pendingStartLine = null;
       rawLines = lines;
+      if (typeof newStartLine === 'number') {
+        startLine = newStartLine;
+      }
       render();
     }
   });
@@ -181,16 +194,30 @@
     let matchCount = 0;
     const htmlParts = [];
 
-    for (const line of rawLines) {
+    rawLines.forEach((line, idx) => {
       const { html, matched } = highlightLine(line, matcher);
       if (matcher && !matched) {
-        continue;
+        return;
       }
       if (matcher) {
         matchCount++;
       }
-      htmlParts.push('<span class="line">' + html + '</span>');
-    }
+      const absoluteLine = startLine + idx;
+      htmlParts.push(
+        '<span class="line">' +
+          '<span class="lineNum" data-line="' +
+          absoluteLine +
+          '" title="Open line ' +
+          absoluteLine +
+          ' in editor">' +
+          absoluteLine +
+          '</span>' +
+          '<span class="lineText">' +
+          html +
+          '</span>' +
+          '</span>'
+      );
+    });
 
     // Each .line span is display:block, which already forces a line break;
     // joining with '\n' here would add a second one since #content is a <pre>
@@ -252,12 +279,26 @@
     vscode.postMessage({ type: 'clear' });
   });
 
+  // Event delegation: gutter numbers are re-created on every render, so a
+  // single listener on the (stable) content container handles all of them.
+  content.addEventListener('click', (e) => {
+    const target = e.target.closest('.lineNum');
+    if (!target) {
+      return;
+    }
+    const lineNumber = Number(target.getAttribute('data-line'));
+    if (Number.isFinite(lineNumber) && lineNumber > 0) {
+      vscode.postMessage({ type: 'gotoLine', line: lineNumber });
+    }
+  });
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
     switch (msg.type) {
       case 'init':
         currentFilePath = msg.filePath;
         rawLines = msg.lines;
+        startLine = typeof msg.startLine === 'number' ? msg.startLine : 1;
         lineLimitInput.value = msg.lineLimit;
         following = true;
         render();
@@ -277,7 +318,7 @@
         }
         break;
       case 'update':
-        applyIncomingLines(msg.lines);
+        applyIncomingLines(msg.lines, msg.startLine);
         break;
       case 'error':
         statusText.textContent = 'Error: ' + msg.message;

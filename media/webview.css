@@ -169,6 +169,26 @@ button.danger:hover {
   background: var(--vscode-list-hoverBackground);
 }
 
+.lineNum {
+  display: inline-block;
+  min-width: 6ch;
+  margin-right: 12px;
+  text-align: right;
+  color: var(--vscode-descriptionForeground);
+  opacity: 0.55;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.lineNum:hover {
+  opacity: 1;
+}
+
+.lineText {
+  white-space: pre;
+}
+
 mark {
   background: var(--vscode-editor-findMatchHighlightBackground, #ffd54f);
   color: inherit;
