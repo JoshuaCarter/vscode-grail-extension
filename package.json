@@ -13,7 +13,23 @@
     "url": "https://github.com/JoshuaCarter/vscode-grail-extension/issues"
   },
   "homepage": "https://github.com/JoshuaCarter/vscode-grail-extension#readme",
-  "keywords": ["log", "tail", "grep", "viewer", "grail"],
+  "keywords": [
+    "log",
+    "logs",
+    "logfile",
+    "log file",
+    "logging",
+    "tail",
+    "tail -f",
+    "grep",
+    "filter",
+    "watch",
+    "follow",
+    "monitor",
+    "viewer",
+    "large file",
+    "grail"
+  ],
   "icon": "media/icon.png",
   "engines": {
     "vscode": "^1.80.0"
@@ -21,8 +37,7 @@
   "categories": ["Other"],
   "activationEvents": [
     "onCommand:tailGrepViewer.open",
-    "onCommand:tailGrepViewer.openInTextEditor",
-    "onCustomEditor:tailGrepViewer.view"
+    "onWebviewPanel:tailGrepViewer"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -32,23 +47,6 @@
         "title": "Grail: Open File",
         "category": "Grail",
         "icon": "media/icon.png"
-      },
-      {
-        "command": "tailGrepViewer.openInTextEditor",
-        "title": "Grail: Open in Text Editor",
-        "category": "Grail"
-      }
-    ],
-    "customEditors": [
-      {
-        "viewType": "tailGrepViewer.view",
-        "displayName": "Grail",
-        "selector": [
-          {
-            "filenamePattern": "*"
-          }
-        ],
-        "priority": "option"
       }
     ],
     "menus": {
@@ -57,39 +55,23 @@
           "command": "tailGrepViewer.open",
           "when": "!explorerResourceIsFolder",
           "group": "navigation@100"
-        },
-        {
-          "command": "tailGrepViewer.openInTextEditor",
-          "when": "!explorerResourceIsFolder",
-          "group": "navigation@101"
         }
       ],
       "editor/title/context": [
         {
           "command": "tailGrepViewer.open",
           "group": "navigation@100"
-        },
-        {
-          "command": "tailGrepViewer.openInTextEditor",
-          "group": "navigation@101"
         }
       ],
       "editor/context": [
         {
           "command": "tailGrepViewer.open",
           "group": "navigation@100"
-        },
-        {
-          "command": "tailGrepViewer.openInTextEditor",
-          "group": "navigation@101"
         }
       ],
       "commandPalette": [
         {
           "command": "tailGrepViewer.open"
-        },
-        {
-          "command": "tailGrepViewer.openInTextEditor"
         }
       ]
     }

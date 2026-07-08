@@ -10,6 +10,51 @@ html, body {
   overflow: hidden;
 }
 
+#fileHandleBar {
+  display: flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  flex-shrink: 0;
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+}
+
+#fileHandle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  color: var(--vscode-textLink-foreground);
+  text-decoration: none;
+  font-size: 12px;
+  cursor: grab;
+  border-radius: 3px;
+  padding: 2px 4px;
+  min-width: 0;
+}
+
+#fileHandle:hover {
+  text-decoration: underline;
+  background: var(--vscode-list-hoverBackground);
+}
+
+#fileHandle:active {
+  cursor: grabbing;
+}
+
+.fileHandleIcon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+
+#fileHandleLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 #toolbar {
   display: flex;
   align-items: center;

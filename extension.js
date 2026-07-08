@@ -11,27 +11,10 @@ const MAX_LINE_LIMIT = 200000;
 const CHUNK_SIZE = 64 * 1024;
 const POLL_INTERVAL_MS = 300;
 
-/** @type {Set<TailSession>} */
-const sessions = new Set();
+/** @type {Map<string, TailSession>} */
+const sessionsByPath = new Map();
 
-const VIEW_TYPE = 'tailGrepViewer.view';
-
-function hasGrailForPath(filePath) {
-  for (const session of sessions) {
-    if (session.filePath === filePath && !session.disposed) {
-      return true;
-    }
-  }
-  return false;
-}
-
-async function openInTextEditor(uri) {
-  const doc = await vscode.workspace.openTextDocument(uri);
-  await vscode.window.showTextDocument(doc, {
-    viewColumn: vscode.ViewColumn.Beside,
-    preview: false
-  });
-}
+const VIEW_TYPE = 'tailGrepViewer';
 
 function activate(context) {
   context.subscriptions.push(
@@ -40,40 +23,60 @@ function activate(context) {
       if (!uri) {
         return;
       }
-      // Custom editors bind to the file URI, so VS Code treats the resource as
-      // already open. If Grail already has this file, open a normal text editor
-      // beside it instead of focusing the existing Grail tab.
-      if (hasGrailForPath(uri.fsPath)) {
-        await openInTextEditor(uri);
-        return;
-      }
-      await vscode.commands.executeCommand('vscode.openWith', uri, VIEW_TYPE);
+      openOrRevealSession(context, uri.fsPath);
     })
   );
 
+  // Restores Grail panels that were open when the window was closed or reloaded.
+  // Filter/line-limit state is persisted separately via the webview's setState/getState.
   context.subscriptions.push(
-    vscode.commands.registerCommand('tailGrepViewer.openInTextEditor', async (uriArg) => {
-      const uri = await resolveTargetUri(uriArg);
-      if (!uri) {
-        return;
+    vscode.window.registerWebviewPanelSerializer(VIEW_TYPE, {
+      async deserializeWebviewPanel(webviewPanel, state) {
+        const filePath = state && state.filePath;
+        if (!filePath || !fs.existsSync(filePath)) {
+          webviewPanel.webview.options = { enableScripts: false };
+          webviewPanel.webview.html = `<!DOCTYPE html><html><body style="font-family:var(--vscode-font-family);padding:16px;color:var(--vscode-descriptionForeground);">File no longer available${
+            filePath ? `: <code>${escapeHtml(filePath)}</code>` : ''
+          }.</body></html>`;
+          return;
+        }
+        if (sessionsByPath.has(filePath)) {
+          webviewPanel.dispose();
+          return;
+        }
+        const session = new TailSession(context, filePath, {
+          panel: webviewPanel,
+          lineLimit: state.lineLimit
+        });
+        sessionsByPath.set(filePath, session);
+        session.panel.onDidDispose(() => {
+          session.dispose();
+          sessionsByPath.delete(filePath);
+        });
       }
-      await openInTextEditor(uri);
-    })
-  );
-
-  context.subscriptions.push(
-    vscode.window.registerCustomEditorProvider(VIEW_TYPE, new TailEditorProvider(context), {
-      webviewOptions: { retainContextWhenHidden: true },
-      supportsMultipleEditorsPerDocument: true
     })
   );
 }
 
 function deactivate() {
-  for (const session of sessions) {
+  for (const session of sessionsByPath.values()) {
     session.dispose();
   }
-  sessions.clear();
+  sessionsByPath.clear();
+}
+
+function openOrRevealSession(context, filePath) {
+  const existing = sessionsByPath.get(filePath);
+  if (existing) {
+    existing.panel.reveal(vscode.ViewColumn.Active);
+    return;
+  }
+  const session = new TailSession(context, filePath);
+  sessionsByPath.set(filePath, session);
+  session.panel.onDidDispose(() => {
+    session.dispose();
+    sessionsByPath.delete(filePath);
+  });
 }
 
 async function resolveTargetUri(uriArg) {
@@ -91,35 +94,11 @@ async function resolveTargetUri(uriArg) {
   return picked && picked[0];
 }
 
-class TailEditorProvider {
-  constructor(context) {
-    this.context = context;
-    // Required by the CustomEditorProvider interface even for a read-only viewer
-    // that never edits its document; this emitter simply never fires.
-    this._onDidChangeCustomDocument = new vscode.EventEmitter();
-    this.onDidChangeCustomDocument = this._onDidChangeCustomDocument.event;
-  }
-
-  async openCustomDocument(uri) {
-    return { uri, dispose() {} };
-  }
-
-  async resolveCustomEditor(document, webviewPanel) {
-    const filePath = document.uri.fsPath;
-    const session = new TailSession(this.context, filePath, { panel: webviewPanel });
-    sessions.add(session);
-    webviewPanel.onDidDispose(() => {
-      session.dispose();
-      sessions.delete(session);
-    });
-  }
-}
-
 class TailSession {
-  constructor(context, filePath, options) {
+  constructor(context, filePath, options = {}) {
     this.context = context;
     this.filePath = filePath;
-    this.lineLimit = DEFAULT_LINE_LIMIT;
+    this.lineLimit = normalizeLineLimit(options.lineLimit);
     this.lines = [];
     this.offset = 0;
     this.partial = '';
@@ -133,11 +112,24 @@ class TailSession {
     this.softWipeMinOffset = 0;
     this.pollEpoch = 0;
 
-    this.panel = options.panel;
-    this.panel.webview.options = {
+    const webviewOptions = {
       enableScripts: true,
+      retainContextWhenHidden: true,
       localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'media')]
     };
+
+    this.panel =
+      options.panel ||
+      vscode.window.createWebviewPanel(
+        VIEW_TYPE,
+        `Grail: ${path.basename(filePath)}`,
+        vscode.ViewColumn.Active,
+        webviewOptions
+      );
+
+    // Restored panels come back with no options set, so they need to be applied explicitly.
+    this.panel.webview.options = webviewOptions;
+    this.panel.title = `Grail: ${path.basename(filePath)}`;
 
     this.panel.webview.html = this.getHtml();
     this.panel.webview.onDidReceiveMessage((msg) => this.handleMessage(msg));
@@ -157,6 +149,7 @@ class TailSession {
       .replace(/__CSP_SOURCE__/g, webview.cspSource)
       .replace(/__NONCE__/g, nonce)
       .replace(/__FILE_PATH__/g, escapeHtml(this.filePath))
+      .replace(/__FILE_NAME__/g, escapeHtml(path.basename(this.filePath)))
       .replace(/__LINE_LIMIT__/g, String(this.lineLimit));
     return html;
   }
@@ -179,6 +172,9 @@ class TailSession {
       case 'gotoLine':
         await this.goToLine(msg.line);
         break;
+      case 'openFile':
+        await this.openFile();
+        break;
       default:
         break;
     }
@@ -194,12 +190,26 @@ class TailSession {
       this.post({
         type: 'init',
         filePath: this.filePath,
+        fileUri: vscode.Uri.file(this.filePath).toString(),
         lineLimit: this.lineLimit,
         lines: this.lines,
         startLine: this.startLineNumber
       });
     } catch (err) {
       this.post({ type: 'error', message: `Failed to read file: ${err.message}` });
+    }
+  }
+
+  // Opens the underlying file in a normal text editor beside this viewer.
+  async openFile() {
+    try {
+      const doc = await vscode.workspace.openTextDocument(this.filePath);
+      await vscode.window.showTextDocument(doc, {
+        viewColumn: vscode.ViewColumn.Beside,
+        preview: false
+      });
+    } catch (err) {
+      this.post({ type: 'error', message: `Failed to open file: ${err.message}` });
     }
   }
 

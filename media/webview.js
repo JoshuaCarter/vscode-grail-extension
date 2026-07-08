@@ -12,10 +12,13 @@
   const jumpBtn = document.getElementById('jumpBtn');
   const scrollArea = document.getElementById('scrollArea');
   const content = document.getElementById('content');
+  const fileHandle = document.getElementById('fileHandle');
+  const fileHandleLabel = document.getElementById('fileHandleLabel');
 
   let rawLines = [];
   let following = true;
   let currentFilePath = null;
+  let currentFileUri = null;
   let pendingLines = null;
   let pendingStartLine = null;
   // Absolute (1-based) line number of rawLines[0] in the file on disk.
@@ -130,6 +133,34 @@
   function escapeRegExp(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
+
+  function fileBasename(filePath) {
+    const i = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+    return i >= 0 ? filePath.slice(i + 1) : filePath;
+  }
+
+  function updateFileHandle(filePath, fileUri) {
+    currentFilePath = filePath;
+    currentFileUri = fileUri;
+    fileHandleLabel.textContent = fileBasename(filePath);
+    fileHandle.title = filePath + ' — click to open, drag into chat';
+  }
+
+  fileHandle.addEventListener('click', (e) => {
+    e.preventDefault();
+    vscode.postMessage({ type: 'openFile' });
+  });
+
+  fileHandle.addEventListener('dragstart', (e) => {
+    if (!currentFileUri || !currentFilePath) {
+      e.preventDefault();
+      return;
+    }
+    e.dataTransfer.setData('text/uri-list', currentFileUri);
+    e.dataTransfer.setData('text/plain', currentFilePath);
+    e.dataTransfer.setData('application/vnd.code.uri-list', currentFileUri);
+    e.dataTransfer.effectAllowed = 'copy';
+  });
 
   // Builds a global RegExp from the filter bar: plain text is treated as a literal
   // substring search (like grep -F), /pattern/flags is treated as a real regex, and
@@ -299,18 +330,15 @@
     const msg = event.data;
     switch (msg.type) {
       case 'init':
-        currentFilePath = msg.filePath;
+        updateFileHandle(msg.filePath, msg.fileUri);
         rawLines = msg.lines;
         startLine = typeof msg.startLine === 'number' ? msg.startLine : 1;
         lineLimitInput.value = msg.lineLimit;
         following = true;
         render();
         persistState();
-        // The extension host always starts a fresh session at the default line
-        // limit (custom editors don't hand back previously persisted state the
-        // way a plain webview serializer would). If we remember a different
-        // limit from before a reload, ask it to re-read the tail with that
-        // limit instead.
+        // If we remember a different line limit from before a reload, ask the
+        // extension to re-read the tail with that limit instead.
         if (
           typeof previousState.lineLimit === 'number' &&
           previousState.lineLimit > 0 &&
