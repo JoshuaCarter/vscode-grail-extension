@@ -7,12 +7,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/JoshuaCarter/vscode-tail-grep-file-extension"
+    "url": "https://github.com/JoshuaCarter/vscode-grail-extension"
   },
   "bugs": {
-    "url": "https://github.com/JoshuaCarter/vscode-tail-grep-file-extension/issues"
+    "url": "https://github.com/JoshuaCarter/vscode-grail-extension/issues"
   },
-  "homepage": "https://github.com/JoshuaCarter/vscode-tail-grep-file-extension#readme",
+  "homepage": "https://github.com/JoshuaCarter/vscode-grail-extension#readme",
   "keywords": ["log", "tail", "grep", "viewer", "grail"],
   "icon": "media/icon.png",
   "engines": {

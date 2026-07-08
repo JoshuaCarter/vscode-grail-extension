@@ -40,7 +40,7 @@ Pushing a version tag builds a `.vsix` and attaches it to a GitHub Release autom
    git tag v1.0.0
    git push origin main --tags
    ```
-3. The workflow produces `grail-1.0.0.vsix` on the [Releases](https://github.com/JoshuaCarter/vscode-tail-grep-file-extension/releases) page.
+3. The workflow produces `grail-1.0.0.vsix` on the [Releases](https://github.com/JoshuaCarter/vscode-grail-extension/releases) page.
 
 You can also trigger a release build manually from the **Actions** tab (**Release** → **Run workflow**).
 
