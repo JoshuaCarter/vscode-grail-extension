@@ -3,6 +3,7 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const DEFAULT_LINE_LIMIT = 10000;
 const MIN_LINE_LIMIT = 1;
@@ -395,32 +396,62 @@ function normalizeLineLimit(value) {
 }
 
 // Clears a log file without fighting an active appender. Truncating in place (ftruncate)
-// while another process still has the file open for append is unsafe on Windows: the
-// writer keeps its old byte offset and can write past the new EOF, producing sparse or
-// garbage data that editors then reject as binary. Instead we rotate like logrotate:
-// rename the current file away (the writer's open handle stays on that inode and keeps
-// appending there harmlessly), then create a brand-new empty file at the original path
-// for this viewer and any new openers to use.
+// while another process still has the file open for append is unsafe: the writer keeps
+// its old byte offset and can write past the new EOF, producing sparse or garbage data.
+//
+// Cross-platform strategy: remove the directory entry while the writer keeps its open
+// handle on the orphaned inode, then create a brand-new empty file at the original path.
+//   - Unix/macOS: unlink (works even when another process has the file open)
+//   - Windows: delete-on-close via Win32 (rename often fails with EBUSY on locked logs)
 function wipeLogFileSafely(filePath) {
-  const dir = path.dirname(filePath);
-  const base = path.basename(filePath);
-  const rotatedPath = path.join(dir, `${base}.${Date.now()}.wiped`);
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, '');
+    return;
+  }
 
+  if (process.platform === 'win32') {
+    wipeLogFileWindows(filePath);
+    return;
+  }
+
+  wipeLogFileUnix(filePath);
+}
+
+// Unix equivalent of Windows delete-on-close: unlink drops the path immediately while
+// any process still holding the file open keeps writing to the old inode harmlessly.
+function wipeLogFileUnix(filePath) {
   try {
-    fs.renameSync(filePath, rotatedPath);
+    fs.unlinkSync(filePath);
   } catch (err) {
-    if (err.code !== 'ENOENT') {
-      throw err;
+    if (err.code === 'ENOENT') {
+      fs.writeFileSync(filePath, '');
+      return;
     }
+    // Fallback if unlink is rejected (unusual): rotate by rename instead.
+    const dir = path.dirname(filePath);
+    const base = path.basename(filePath);
+    const rotatedPath = path.join(dir, `${base}.${Date.now()}.wiped`);
+    fs.renameSync(filePath, rotatedPath);
+    try {
+      fs.unlinkSync(rotatedPath);
+    } catch (_) {}
   }
 
   fs.writeFileSync(filePath, '');
+}
 
-  // Best-effort cleanup of the rotated backup. This usually fails on Windows while the
-  // original writer still holds the old file open, which is fine — leave it on disk.
+function wipeLogFileWindows(filePath) {
+  const scriptPath = path.join(__dirname, 'scripts', 'wipe-log-windows.ps1');
   try {
-    fs.unlinkSync(rotatedPath);
-  } catch (_) {}
+    execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, '-Path', filePath],
+      { timeout: 15000, windowsHide: true }
+    );
+  } catch (err) {
+    const detail = err.stderr ? String(err.stderr).trim() : err.message;
+    throw new Error(detail || err.message);
+  }
 }
 
 function escapeHtml(s) {
